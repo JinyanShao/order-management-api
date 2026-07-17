@@ -1,3 +1,15 @@
+import concurrent.futures
+import threading
+import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import func, select
+
+from order_api.core.database import SessionLocal
+from order_api.core.security import hash_token
+from order_api.models import RefreshToken
+
+
 def register(client, slug="auth-org", email="owner@auth.example.com"):
     response = client.post(
         "/api/v1/auth/register",
@@ -64,6 +76,59 @@ def test_auth_login_rotation_logout_and_non_disclosure(client):
     assert {k: v for k, v in unknown_error.items() if k != "request_id"} == {
         k: v for k, v in wrong_error.items() if k != "request_id"
     }
+
+
+def test_concurrent_refresh_token_rotation_allows_one_success(client):
+    tokens = register(client, slug="refresh-race", email="owner@refresh-race.example.com")
+    current_user = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+    ).json()
+    user_id = uuid.UUID(current_user["id"])
+    barrier = threading.Barrier(2)
+
+    def rotate_token():
+        barrier.wait()
+        return client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": tokens["refresh_token"]},
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: rotate_token(), range(2)))
+
+    assert sorted(response.status_code for response in responses) == [200, 401]
+    successful = next(response for response in responses if response.status_code == 200)
+    rejected = next(response for response in responses if response.status_code == 401)
+    assert rejected.json()["error"]["code"] == "INVALID_CREDENTIALS"
+
+    new_refresh_token = successful.json()["refresh_token"]
+    now = datetime.now(UTC)
+    with SessionLocal() as db:
+        active_count = db.scalar(
+            select(func.count())
+            .select_from(RefreshToken)
+            .where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.expires_at > now,
+            )
+        )
+        total_count = db.scalar(
+            select(func.count()).select_from(RefreshToken).where(RefreshToken.user_id == user_id)
+        )
+        active_new_token = db.scalar(
+            select(RefreshToken).where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.token_hash == hash_token(new_refresh_token),
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.expires_at > now,
+            )
+        )
+
+    assert active_count == 1
+    assert total_count == 2
+    assert active_new_token is not None
 
 
 def test_user_permissions_and_customer_product_crud(client, owner):
