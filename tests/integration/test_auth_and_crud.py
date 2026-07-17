@@ -3,11 +3,13 @@ import threading
 import uuid
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import func, select
 
 from order_api.core.database import SessionLocal
 from order_api.core.security import hash_token
-from order_api.models import RefreshToken
+from order_api.models import Organization, RefreshToken, User
+from order_api.services import auth as auth_service
 
 
 def register(client, slug="auth-org", email="owner@auth.example.com"):
@@ -76,6 +78,29 @@ def test_auth_login_rotation_logout_and_non_disclosure(client):
     assert {k: v for k, v in unknown_error.items() if k != "request_id"} == {
         k: v for k, v in wrong_error.items() if k != "request_id"
     }
+
+
+def test_registration_rolls_back_when_refresh_token_creation_fails(client, monkeypatch):
+    def fail_refresh_token_creation():
+        raise RuntimeError("Refresh token creation failed")
+
+    monkeypatch.setattr(auth_service, "create_refresh_token", fail_refresh_token_creation)
+
+    with pytest.raises(RuntimeError, match="Refresh token creation failed"):
+        client.post(
+            "/api/v1/auth/register",
+            json={
+                "organization_name": "Atomic Registration",
+                "organization_slug": "atomic-registration",
+                "email": "owner@atomic-registration.example.com",
+                "password": "correct-horse-battery-staple",
+            },
+        )
+
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Organization)) == 0
+        assert db.scalar(select(func.count()).select_from(User)) == 0
+        assert db.scalar(select(func.count()).select_from(RefreshToken)) == 0
 
 
 def test_concurrent_refresh_token_rotation_allows_one_success(client):

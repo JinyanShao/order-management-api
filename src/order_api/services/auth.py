@@ -20,10 +20,9 @@ from order_api.repositories.auth_repository import (
 from order_api.schemas import LoginRequest, RegisterRequest, TokenPair
 
 
-def issue_token_pair(db: Session, user: User) -> TokenPair:
+def build_token_pair(db: Session, user: User) -> TokenPair:
     raw, digest, expires_at = create_refresh_token()
     db.add(RefreshToken(user_id=user.id, token_hash=digest, expires_at=expires_at))
-    db.commit()
     return TokenPair(access_token=create_access_token(user.id), refresh_token=raw)
 
 
@@ -39,19 +38,29 @@ def register(db: Session, payload: RegisterRequest) -> TokenPair:
             role=UserRole.owner,
         )
         db.add(user)
+        db.flush()
+        token_pair = build_token_pair(db, user)
         db.commit()
-        db.refresh(user)
     except IntegrityError:
         db.rollback()
         raise conflict("Organization slug already exists.") from None
-    return issue_token_pair(db, user)
+    except Exception:
+        db.rollback()
+        raise
+    return token_pair
 
 
 def login(db: Session, payload: LoginRequest) -> TokenPair:
     user = find_login_user(db, payload.organization_slug, payload.email.lower())
     if user is None or not verify_password(payload.password, user.password_hash):
         raise AppError("INVALID_CREDENTIALS", "Invalid credentials.", status_code=401)
-    return issue_token_pair(db, user)
+    try:
+        token_pair = build_token_pair(db, user)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return token_pair
 
 
 def refresh(db: Session, raw_token: str) -> TokenPair:
@@ -62,9 +71,14 @@ def refresh(db: Session, raw_token: str) -> TokenPair:
     user = db.get(User, token.user_id)
     if user is None or not user.is_active:
         raise AppError("INVALID_CREDENTIALS", "Invalid refresh token.", status_code=401)
-    token.revoked_at = now
-    db.flush()
-    return issue_token_pair(db, user)
+    try:
+        token.revoked_at = now
+        token_pair = build_token_pair(db, user)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return token_pair
 
 
 def logout(db: Session, raw_token: str) -> None:
