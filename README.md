@@ -223,40 +223,53 @@ is above the enforced 90% threshold.
 
 ## 14. Example requests
 
-Register an organization owner:
+Register an organization owner and capture the returned access token. The example uses `jq` to
+extract response fields:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/register \
+AUTH_RESPONSE="$(curl -sS -X POST http://localhost:8000/api/v1/auth/register \
   -H 'Content-Type: application/json' \
   -d '{
     "organization_name": "Acme",
     "organization_slug": "acme",
     "email": "owner@acme.example.com",
-    "password": "replace-with-a-strong-password"
-  }'
+    "password": "Example-Only-Password-2026!"
+  }')"
+ACCESS_TOKEN="$(printf '%s' "$AUTH_RESPONSE" | jq -r '.access_token')"
 ```
 
-Create an order using an access token:
+Create a customer and product, then create an order with their returned IDs:
 
 ```bash
+CUSTOMER_ID="$(curl -sS -X POST http://localhost:8000/api/v1/customers \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Example Customer","country":"CH"}' | jq -r '.id')"
+
+PRODUCT_ID="$(curl -sS -X POST http://localhost:8000/api/v1/products \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"sku":"SKU-1001","name":"Example Product","unit_price_cents":2500,"stock_quantity":10}' \
+  | jq -r '.id')"
+
 curl -X POST http://localhost:8000/api/v1/orders \
-  -H 'Authorization: Bearer ACCESS_TOKEN' \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Idempotency-Key: checkout-2026-0001' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "customer_id": "00000000-0000-0000-0000-000000000001",
-    "currency": "CHF",
-    "items": [
-      {"product_id": "00000000-0000-0000-0000-000000000002", "quantity": 2}
+  -d "{
+    \"customer_id\": \"$CUSTOMER_ID\",
+    \"currency\": \"CHF\",
+    \"items\": [
+      {\"product_id\": \"$PRODUCT_ID\", \"quantity\": 2}
     ]
-  }'
+  }"
 ```
 
 Safely list orders:
 
 ```bash
 curl 'http://localhost:8000/api/v1/orders?page=1&page_size=20&status=confirmed&sort=-created_at' \
-  -H 'Authorization: Bearer ACCESS_TOKEN'
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
 ## 15. Error model
