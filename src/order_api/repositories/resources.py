@@ -1,6 +1,9 @@
-from sqlalchemy.orm import selectinload
+import uuid
 
-from order_api.models import AuditLog, Customer, Order, Product, User
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from order_api.models import AuditLog, Customer, Order, Product, User, UserRole
 from order_api.repositories.base import TenantRepository
 
 user_repository = TenantRepository(
@@ -41,3 +44,19 @@ audit_repository = TenantRepository(
     searchable=(AuditLog.entity_type, AuditLog.action),
     status_column=AuditLog.action,
 )
+
+
+def lock_active_owners(db: Session, organization_id: uuid.UUID) -> list[User]:
+    return list(
+        db.scalars(
+            select(User)
+            .where(
+                User.organization_id == organization_id,
+                User.role == UserRole.owner,
+                User.is_active.is_(True),
+            )
+            .order_by(User.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )

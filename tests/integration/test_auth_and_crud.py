@@ -243,9 +243,40 @@ def test_duplicate_constraints_and_authentication_required(client, owner):
     duplicate = client.post("/api/v1/products", json=body, headers=owner)
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["code"] == "RESOURCE_CONFLICT"
+
+    second = client.post(
+        "/api/v1/products",
+        json={"sku": "SECOND", "name": "Second product", "unit_price_cents": 1},
+        headers=owner,
+    )
+    update_conflict = client.patch(
+        f"/api/v1/products/{second.json()['id']}",
+        json={"sku": "DUPLICATE"},
+        headers=owner,
+    )
+    assert update_conflict.status_code == 409
+    assert update_conflict.json()["error"]["code"] == "RESOURCE_CONFLICT"
+
     missing_auth = client.get("/api/v1/orders")
     assert missing_auth.status_code == 401
     assert missing_auth.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+
+
+def test_last_active_owner_cannot_be_demoted_or_deactivated(client, owner):
+    current_user = client.get("/api/v1/auth/me", headers=owner).json()
+    user_url = f"/api/v1/users/{current_user['id']}"
+
+    demotion = client.patch(user_url, json={"role": "manager"}, headers=owner)
+    assert demotion.status_code == 409
+    assert demotion.json()["error"]["code"] == "RESOURCE_CONFLICT"
+
+    deactivation = client.patch(user_url, json={"is_active": False}, headers=owner)
+    assert deactivation.status_code == 409
+    assert deactivation.json()["error"]["code"] == "RESOURCE_CONFLICT"
+
+    unchanged = client.get(user_url, headers=owner).json()
+    assert unchanged["role"] == "owner"
+    assert unchanged["is_active"] is True
 
 
 def test_cors_and_trusted_host_are_explicit(client):

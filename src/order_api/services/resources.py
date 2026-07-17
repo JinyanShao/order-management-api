@@ -4,11 +4,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from order_api.core.exceptions import conflict, not_found
-from order_api.models import Customer, Product, User
+from order_api.models import Customer, Product, User, UserRole
 from order_api.repositories.base import TenantRepository
 from order_api.repositories.order_repository import lock_products
 from order_api.repositories.resources import (
     customer_repository,
+    lock_active_owners,
     product_repository,
     user_repository,
 )
@@ -85,7 +86,11 @@ def update_product(
     obj = get_resource(db, product_repository, product_id, actor, "Product")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, field, value)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise conflict("SKU already exists in this organization.") from None
     db.refresh(obj)
     return obj
 
@@ -150,6 +155,13 @@ def update_user(
         values["email"] = str(values["email"]).lower()
     if password_hash:
         values["password_hash"] = password_hash
+    removes_owner = (
+        values.get("role") not in (None, UserRole.owner) or values.get("is_active") is False
+    )
+    if removes_owner:
+        active_owners = lock_active_owners(db, actor.organization_id)
+        if len(active_owners) == 1 and active_owners[0].id == obj.id:
+            raise conflict("The organization must retain at least one active owner.")
     for field, value in values.items():
         setattr(obj, field, value)
     try:
@@ -165,5 +177,8 @@ def deactivate_user(db: Session, user_id: uuid.UUID, actor: User) -> None:
     obj = get_resource(db, user_repository, user_id, actor, "User")
     if obj.id == actor.id:
         raise conflict("You cannot deactivate yourself.")
+    active_owners = lock_active_owners(db, actor.organization_id)
+    if len(active_owners) == 1 and active_owners[0].id == obj.id:
+        raise conflict("The organization must retain at least one active owner.")
     obj.is_active = False
     db.commit()
