@@ -1,6 +1,6 @@
 # Order Management API
 
-![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
+[![CI](https://github.com/JinyanShao/order-management-api/actions/workflows/ci.yml/badge.svg)](https://github.com/JinyanShao/order-management-api/actions/workflows/ci.yml)
 ![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
