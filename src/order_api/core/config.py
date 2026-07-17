@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://orders:orders@localhost:5432/orders"
     jwt_secret_key: str = Field(min_length=32)
     jwt_algorithm: str = "HS256"
+    jwt_issuer: str = "order-management-api"
+    jwt_audience: str = "order-management-api-clients"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
     cors_origins: list[str] = ["http://localhost:3000"]

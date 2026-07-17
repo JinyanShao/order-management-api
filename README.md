@@ -158,6 +158,8 @@ Open `http://localhost:8000/docs` after startup.
 | `DATABASE_URL` | Yes | SQLAlchemy PostgreSQL URL |
 | `JWT_SECRET_KEY` | Yes | At least 32 characters; no application default |
 | `JWT_ALGORITHM` | No | `HS256` |
+| `JWT_ISSUER` | No | `order-management-api` |
+| `JWT_AUDIENCE` | No | `order-management-api-clients` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No | `15` |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | No | `30` |
 | `CORS_ORIGINS` | No | JSON list; local frontend origin by default |
@@ -295,7 +297,7 @@ Primary codes include `VALIDATION_ERROR`, `AUTHENTICATION_REQUIRED`, `INVALID_CR
 ## 16. Security decisions
 
 - Passwords use Argon2 and are never stored or logged in plaintext.
-- Access tokens are signed JWTs with expiry, type, subject and unique `jti` claims.
+- Access tokens are signed JWTs with expiry, type, subject, unique `jti`, issuer and audience claims.
 - Refresh tokens are opaque random values; only SHA-256 digests are stored.
 - Refresh tokens rotate on use and old tokens are immediately revoked.
 - Authentication failures do not reveal whether an organization or user exists.
@@ -346,6 +348,7 @@ Post-v1 candidates:
 - Reverse-proxy and application-level request body size limits.
 - Keyset pagination for high-volume datasets.
 - Scheduled cleanup for expired refresh tokens and idempotency records.
+- Refresh-token families with reuse detection and family-wide revocation.
 - OpenTelemetry tracing when distributed deployment makes it useful.
 
 ## 20. License
