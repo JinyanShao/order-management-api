@@ -56,7 +56,7 @@ def login(db: Session, payload: LoginRequest) -> TokenPair:
 
 def refresh(db: Session, raw_token: str) -> TokenPair:
     now = datetime.now(UTC)
-    token = find_refresh_token(db, hash_token(raw_token), now)
+    token = find_refresh_token(db, hash_token(raw_token), now, lock=True)
     if token is None:
         raise AppError("INVALID_CREDENTIALS", "Invalid refresh token.", status_code=401)
     user = db.get(User, token.user_id)
