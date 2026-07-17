@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 
 from order_api.core.config import get_settings
 
@@ -19,7 +19,7 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, password_hash: str) -> bool:
     try:
         return password_hasher.verify(password_hash, password)
-    except VerifyMismatchError:
+    except (VerificationError, InvalidHashError):
         return False
 
 
@@ -32,6 +32,8 @@ def create_access_token(user_id: uuid.UUID) -> str:
         "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
@@ -48,7 +50,13 @@ def hash_token(token: str) -> str:
 
 def decode_access_token(token: str) -> uuid.UUID:
     settings = get_settings()
-    payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+    payload = jwt.decode(
+        token,
+        settings.jwt_secret_key,
+        algorithms=[settings.jwt_algorithm],
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
+    )
     if payload.get("type") != "access":
         raise jwt.InvalidTokenError("Invalid token type")
     return uuid.UUID(payload["sub"])

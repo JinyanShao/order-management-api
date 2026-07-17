@@ -24,6 +24,7 @@ def test_password_hash_and_token_round_trip():
     assert password_hash != "correct-horse-battery-staple"
     assert verify_password("correct-horse-battery-staple", password_hash)
     assert not verify_password("wrong-password", password_hash)
+    assert not verify_password("correct-horse-battery-staple", "damaged-hash")
 
     user_id = uuid.uuid4()
     access = create_access_token(user_id)
@@ -41,6 +42,8 @@ def test_access_token_rejects_wrong_type_and_expiration():
             "sub": str(uuid.uuid4()),
             "type": "refresh",
             "exp": datetime.now(UTC) + timedelta(minutes=1),
+            "iss": settings.jwt_issuer,
+            "aud": settings.jwt_audience,
         },
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
@@ -52,12 +55,44 @@ def test_access_token_rejects_wrong_type_and_expiration():
             "sub": str(uuid.uuid4()),
             "type": "access",
             "exp": datetime.now(UTC) - timedelta(seconds=1),
+            "iss": settings.jwt_issuer,
+            "aud": settings.jwt_audience,
         },
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
     )
     with pytest.raises(jwt.ExpiredSignatureError):
         decode_access_token(expired)
+
+
+def test_access_token_rejects_wrong_issuer_and_audience():
+    settings = get_settings()
+    now = datetime.now(UTC)
+    payload = {
+        "sub": str(uuid.uuid4()),
+        "type": "access",
+        "exp": now + timedelta(minutes=1),
+        "iat": now,
+        "jti": str(uuid.uuid4()),
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+    }
+
+    wrong_issuer = jwt.encode(
+        {**payload, "iss": "another-service"},
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+    with pytest.raises(jwt.InvalidIssuerError):
+        decode_access_token(wrong_issuer)
+
+    wrong_audience = jwt.encode(
+        {**payload, "aud": "another-client"},
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+    with pytest.raises(jwt.InvalidAudienceError):
+        decode_access_token(wrong_audience)
 
 
 def test_order_amount_and_state_guards():
