@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: orders_test
+          POSTGRES_USER: orders
+          POSTGRES_PASSWORD: orders
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orders -d orders_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://orders:orders@localhost:5432/orders_test
+      JWT_SECRET_KEY: github-actions-secret-key-for-tests-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: alembic upgrade head
+      - run: alembic check
+      - run: pytest --cov=order_api --cov-fail-under=90
