@@ -7,14 +7,15 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-Production-oriented multi-tenant order management REST API built with FastAPI,
-PostgreSQL, SQLAlchemy 2, Alembic and Pydantic 2. The current API version is `v1.0.0`.
+A multi-tenant order operations backend that turns business workflows into reliable, observable,
+and automatable software.
 
 ## 1. Project overview
 
 Order Management API is a single deployable backend for organizations that manage users,
 customers, products, inventory and orders. It provides JWT authentication, role-based access,
 tenant isolation, transactional inventory handling, audit trails and concurrency protection.
+The current API version is `v1.0.0`.
 
 Interactive OpenAPI documentation is available at `/docs`; health endpoints are exposed at
 `/health` and `/ready`.
@@ -25,6 +26,13 @@ Order processing is more than CRUD. Confirming an order must reserve stock atomi
 requests must not oversell, cancellation may need to restore inventory, and every operation must
 remain inside the authenticated organization. This project centralizes those rules and exposes a
 consistent HTTP contract suitable for internal tools or future frontend clients.
+
+The product direction is organized around four business goals:
+
+1. Reduce order failures caused by stock shortages, duplicate requests and invalid state changes.
+2. Automatically identify orders that require human attention.
+3. Give operations teams actionable business metrics.
+4. Preserve a complete, explainable record of business decisions.
 
 ## 3. Core features
 
@@ -40,6 +48,11 @@ consistent HTTP contract suitable for internal tools or future frontend clients.
 - Audit logs for order state and inventory changes.
 - Standard error envelope and request ID propagation.
 - Structured JSON request logs and database-aware readiness checks.
+
+These capabilities remain the foundation of the next version. The existing order flow already
+provides atomic inventory deduction, inventory restoration on cancellation, state-transition
+validation and server-side amount calculation. The next version adds operational depth to this
+reliable core rather than replacing it.
 
 ## 4. Architecture
 
@@ -345,6 +358,45 @@ Implementation phases completed for v1.0.0:
 
 Post-v1 candidates:
 
+- **Order Exceptions:** a tenant-scoped operations queue that identifies order problems, assigns
+  responsibility and tracks each issue through resolution. Planned exception types are
+  `payment_pending`, `insufficient_stock`, `inventory_changed`,
+  `customer_information_incomplete`, `processing_overdue`, `shipment_overdue` and
+  `manual_review_required`.
+  - Each exception links to an order and records its organization, type, severity (`low`, `medium`,
+    `high` or `critical`), reason, current assignee, creation time, resolution time and resolution
+    note.
+  - Its lifecycle is `open`, `acknowledged`, `resolved` or `dismissed`.
+  - The module provides explicit problem detection, ownership and a closed-loop operational
+    workflow instead of requiring staff to discover issues manually in order lists.
+- **Inventory Reservations:** time-limited stock holds for carts, quotations, manual reviews and
+  payment-waiting workflows. Creating an order may reserve inventory before confirmation rather
+  than deducting it immediately.
+  - Every reservation has an expiration time and belongs to a specific order and product.
+  - Confirmation converts reserved quantities into committed inventory deductions.
+  - Cancellation releases active reservations, while unconfirmed reservations are released
+    automatically after expiration.
+  - Repeated requests for the same order must not reserve inventory more than once.
+  - Every reservation, conversion, release and expiration is written to the audit log.
+  - Reservation and release operations remain transactionally safe under concurrent requests and
+    preserve consistent available-stock calculations.
+  - The module introduces a justified background task, time-driven business rules, idempotent
+    operations and concurrent transaction handling without changing the existing inventory safety
+    guarantees.
+- **Automation Rules:** simple, administrator-managed rules that safely automate repeated
+  operational decisions. V2 intentionally supports only four rule templates:
+  1. Mark high-value orders for manual review.
+  2. Create an inventory exception when stock falls below a configured threshold.
+  3. Create an overdue exception when an order remains in `processing` beyond a configured period.
+  4. Move an eligible order into `processing` automatically.
+  - Each rule records its name, trigger event, structured conditions, action, enabled state,
+    priority, last run time and most recent execution result.
+  - Conditions and actions use finite, validated schemas. Users cannot submit executable code or
+    define an unrestricted domain-specific language.
+  - The module is deliberately not a general-purpose rules engine. Its scope stays small enough to
+    audit, test and explain every supported decision path.
+  - This capability demonstrates how repeated business decisions can be identified and automated
+    without weakening operational control or system predictability.
 - Reverse-proxy and application-level request body size limits.
 - Keyset pagination for high-volume datasets.
 - Scheduled cleanup for expired refresh tokens and idempotency records.
