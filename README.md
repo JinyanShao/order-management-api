@@ -88,6 +88,107 @@ src/order_api/
 └── main.py
 ```
 
+### V2 modular monolith
+
+V2 remains a modular monolith. It is organized by business capability so related HTTP contracts,
+business rules and persistence code evolve together without introducing distributed-system
+overhead.
+
+```text
+src/order_api/
+├── api/
+├── auth/
+├── organizations/
+├── customers/
+├── products/
+├── inventory/
+├── orders/
+├── exceptions/
+├── automation/
+├── analytics/
+├── webhooks/
+├── audit/
+├── shared/
+└── main.py
+```
+
+A business module normally owns `models.py`, `schemas.py`, `repository.py`, `service.py` and
+`router.py`. Additional files are introduced only when a module has enough real complexity to
+justify them. Shared infrastructure stays in `shared`; business behavior does not move there for
+the sake of architectural symmetry.
+
+V2 also adds a separately running worker process for time-driven and asynchronous work:
+
+- release expired inventory reservations;
+- detect overdue orders;
+- execute enabled automation rules;
+- deliver webhook events; and
+- remove expired refresh tokens and historical idempotency records.
+
+PostgreSQL remains the durable source of truth. Business transactions write asynchronous work to a
+database outbox, and workers claim batches with `FOR UPDATE SKIP LOCKED` before processing them.
+Docker Compose runs the API, worker and PostgreSQL as three processes. V2 does not require Redis,
+Celery or a separate message broker, and it does not split the application into microservices.
+
+### V2 key business workflows
+
+Order creation validates all tenant-scoped references and calculates monetary values before any
+reservation is accepted:
+
+```text
+Create order
+    │
+    ├── Validate customer and products
+    ├── Calculate server-side totals
+    ├── Create inventory reservations
+    ├── Write audit event
+    └── Publish order.created event through the outbox
+```
+
+Confirmation converts existing reservations into committed inventory changes within one
+transaction:
+
+```text
+Confirm order
+    │
+    ├── Validate order version and state
+    ├── Lock reservations and products
+    ├── Validate reservation availability
+    ├── Convert reservations into stock deduction
+    ├── Change order to confirmed
+    ├── Evaluate automation rules
+    ├── Write audit event
+    └── Publish order.confirmed event through the outbox
+```
+
+Detected business conditions enter a visible exception workflow rather than remaining implicit in
+logs or order lists:
+
+```text
+Business condition detected
+    │
+    ├── Create exception and assign severity
+    ├── Optionally assign an owner
+    ├── Publish exception.created event
+    ├── Operations user acknowledges the exception
+    ├── User resolves or dismisses the exception
+    ├── Store resolution note
+    └── Publish exception.resolved event when resolved
+```
+
+Webhook delivery is asynchronous and records every outcome:
+
+```text
+Domain event
+    │
+    ├── Persist outbox record with the business transaction
+    ├── Worker claims record
+    ├── Send signed HTTP delivery
+    ├── Store delivery attempt
+    ├── Retry temporary failures with exponential backoff
+    └── Mark delivery as delivered or exhausted
+```
+
 ## 5. Domain model
 
 - `Organization`: tenant boundary and unique slug.
@@ -131,6 +232,24 @@ draft ──► confirmed ──► processing ──► shipped
 
 RBAC does not replace tenant filtering: every business query independently applies the current
 user's `organization_id`.
+
+### V2 authorization expansion
+
+V2 keeps the existing roles and adds explicit permissions for the new operational capabilities:
+
+| Operation | Owner | Manager | Staff | Viewer |
+|---|:---:|:---:|:---:|:---:|
+| Manage automation rules | ✓ | ✓ |  |  |
+| Manage webhook endpoints | ✓ |  |  |  |
+| View operational analytics | ✓ | ✓ | ✓ | ✓ |
+| Acknowledge, resolve or dismiss order exceptions | ✓ | ✓ | ✓ |  |
+| Assign exception owners | ✓ | ✓ |  |  |
+| Manually retry webhook deliveries | ✓ | ✓ |  |  |
+| View the complete audit log | ✓ | ✓ |  |  |
+
+These permissions authorize an operation but never determine its tenant scope. Every repository
+query for automation rules, webhooks, analytics, exceptions and audit data independently filters
+by the authenticated user's `organization_id`.
 
 ## 8. API overview
 
@@ -235,6 +354,26 @@ ruff format --check src tests
 
 The suite covers unit, integration and concurrent confirmation behavior. Current measured coverage
 is above the enforced 90% threshold.
+
+### V2 testing standard
+
+V2 completion is measured by verified business behavior rather than endpoint count. Its required
+test scenarios include:
+
+- concurrent inventory reservation attempts cannot over-reserve available stock;
+- expired reservations are released and available inventory is restored;
+- repeated automation-rule execution is idempotent;
+- concurrent workers claim each queued task safely without processing the same claim in parallel;
+- webhook signatures can be verified from the documented payload and headers;
+- temporary webhook failures retry according to policy and permanent exhaustion is recorded;
+- automation rules, exceptions, analytics and webhooks remain isolated between organizations;
+- operational metrics match known transactional fixtures and documented definitions;
+- exception lifecycle transitions reject invalid state changes; and
+- business changes and their outbox records commit or roll back together.
+
+The coverage gate remains at 90% or higher, but coverage is not a substitute for meaningful
+assertions. Tests must exercise business invariants, failure modes and observable outcomes rather
+than add low-value cases solely to increase the percentage.
 
 ## 14. Example requests
 
@@ -397,6 +536,46 @@ Post-v1 candidates:
     audit, test and explain every supported decision path.
   - This capability demonstrates how repeated business decisions can be identified and automated
     without weakening operational control or system predictability.
+- **Operational Analytics:** tenant-scoped aggregation endpoints for future dashboards and business
+  intelligence tools. The initial metric set includes:
+  - order count within a selected time range;
+  - total order amount and average order amount;
+  - order counts grouped by status;
+  - order cancellation rate;
+  - average processing duration;
+  - daily order trend;
+  - highest-selling products;
+  - current open exception count; and
+  - count of products whose stock is below a selected threshold.
+  - Queries can be filtered by date range, order status, customer, product and currency while
+    remaining scoped to the authenticated organization.
+  - Monetary values remain integer minor currency units. Metric definitions, time boundaries and
+    denominator rules are documented so every result is reproducible and testable.
+  - Metrics that can be calculated reliably from transactional data are computed when requested
+    rather than stored as duplicated values.
+  - Complex aggregation paths receive targeted database indexes based on their query plans. The
+    module does not introduce a separate data warehouse solely to demonstrate additional
+    infrastructure.
+  - This capability connects backend implementation with business understanding by translating
+    operational activity into clear, verifiable metrics.
+- **Webhooks:** organization administrators can configure signed endpoints for reliable external
+  integration. V2 emits `order.created`, `order.confirmed`, `order.cancelled`, `order.shipped`,
+  `inventory.low`, `exception.created` and `exception.resolved` events.
+  - Every delivery includes a unique delivery ID and a verifiable event signature.
+  - Delivery processing applies explicit request timeouts, bounded retry counts and exponential
+    backoff.
+  - Delivery logs record attempts, timestamps, response outcomes and final success or failure
+    status, and administrators can manually resend failed deliveries.
+  - Event payloads use documented schemas and filter credentials, tokens and other sensitive
+    fields before persistence or delivery.
+  - A transactional database outbox stores events alongside business changes. A background worker
+    reads the outbox and performs delivery without splitting the application into separate
+    services.
+  - Delivery is designed for reliable retry and recovery but does not promise exactly-once
+    semantics. Consumers use the delivery ID to handle duplicate attempts safely.
+  - The module does not introduce Kafka, a RabbitMQ cluster or a microservice architecture. It
+    demonstrates system integration, reliable asynchronous processing, failure recovery and clear
+    external contracts within the existing monolith.
 - Reverse-proxy and application-level request body size limits.
 - Keyset pagination for high-volume datasets.
 - Scheduled cleanup for expired refresh tokens and idempotency records.
